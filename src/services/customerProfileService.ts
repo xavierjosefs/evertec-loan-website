@@ -566,6 +566,26 @@ export async function saveDocumentMetadata(
     formData.append("idNumberImage", file, file.name);
   } else if (isBankStatement) {
     formData.append("bankStatementsFiles", file, file.name);
+
+    const currentDocument = profile.documents.find(
+      (document) => document.requirementKey === requirementKey,
+    );
+
+    const indexMatch = requirementKey.match(/^bank_statement_(\d+)$/);
+    const replacementIndex = indexMatch ? Number(indexMatch[1]) : null;
+
+    const isExistingBankStatement =
+      currentDocument?.status === "UPLOADED" &&
+      Boolean(currentDocument.fileUrl) &&
+      replacementIndex !== null &&
+      Number.isInteger(replacementIndex);
+
+    if (isExistingBankStatement) {
+      formData.append(
+        "bankStatementIndex",
+        String(replacementIndex),
+      );
+    }
   } else if (requirementKey === "income_proof") {
     formData.append("proofOfIncomeFile", file, file.name);
   } else {
@@ -594,35 +614,57 @@ export async function removeDocumentMetadata(
   profile: CustomerProfile,
   requirementKey: string,
 ): Promise<CustomerProfile> {
-  try {
-    await apiRequest(`/profile/documents/${requirementKey}`, {
-      method: "DELETE",
-    });
-    return getCustomerProfile({
-      id: profile.userId,
-      name: `${profile.personal.firstNames} ${profile.personal.lastNames}`.trim(),
-      email: profile.personal.email,
-      phone: profile.personal.primaryPhone,
-    });
-  } catch {
-    // Metadata-only local fallback.
-  }
-
-  const nextDocuments = buildDocuments(profile).map((document) =>
-    document.requirementKey === requirementKey
-      ? {
-          id: document.id,
-          requirementKey: document.requirementKey,
-          name: document.name,
-          description: document.description,
-          required: document.required,
-          status: "MISSING" as const,
-        }
-      : document,
+  const currentDocument = profile.documents.find(
+    (document) => document.requirementKey === requirementKey,
   );
 
-  return saveCustomerProfile({
-    ...profile,
-    documents: nextDocuments,
+  const isIdentityDocument = [
+    "identity_document",
+    "cedula_front",
+    "cedula_back",
+    "passport_bio",
+  ].includes(requirementKey);
+
+  const isBankStatement = requirementKey.startsWith("bank_statement_");
+
+  let payload: Record<string, unknown>;
+
+  if (isIdentityDocument) {
+    payload = {
+      removeIdNumberImage: true,
+    };
+  } else if (requirementKey === "income_proof") {
+    payload = {
+      removeProofOfIncomeFile: true,
+    };
+  } else if (isBankStatement) {
+    if (!currentDocument?.fileUrl) {
+      throw new Error(
+        "No se encontró la URL del estado de cuenta que deseas eliminar.",
+      );
+    }
+
+    payload = {
+      removeBankStatementUrl: currentDocument.fileUrl,
+    };
+  } else {
+    throw new Error(
+      "Este tipo de documento todavía no está conectado al perfil.",
+    );
+  }
+
+  await apiRequest<{
+    ok: boolean;
+    customer: ApiCustomerProfile;
+  }>("/customer/me", {
+    method: "PUT",
+    body: JSON.stringify(payload),
+  });
+
+  return getCustomerProfile({
+    id: profile.userId,
+    name: `${profile.personal.firstNames} ${profile.personal.lastNames}`.trim(),
+    email: profile.personal.email,
+    phone: profile.personal.primaryPhone,
   });
 }
